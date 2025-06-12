@@ -106,8 +106,13 @@ fn main() {
   for received in rx {
     match received {
       Message::AddMatchRequest(match_request) => {
-        println!("Add match request triggered, {}", match_request);
-        match_requests.insert(match_request.id.clone(), match_request);
+        if !match_requests.contains_key(&match_request.id) {
+          println!("Adding new MatchRequest: {}", match_request);
+          match_requests.insert(match_request.id.clone(), match_request);
+        }
+
+        
+        // if the id and socket address match, or if it is a new key then do insert.
       },
       Message::TriggerTimeouts => {
         match_requests.retain(|_, v| !v.expired());
