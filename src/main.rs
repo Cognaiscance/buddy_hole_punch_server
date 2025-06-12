@@ -3,12 +3,13 @@ use std::sync::mpsc::{self, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 use std::collections::HashMap;
+use std::fmt;
 
 enum Message {
     AddMatchRequest(MatchRequest),
     TriggerTimeouts,
 }
-
+#[derive(Clone)]
 struct MatchRequest {
   id: String,
   created_at: Instant,
@@ -25,7 +26,20 @@ impl MatchRequest {
   }
 
   fn expired(&self) -> bool {
-    self.created_at > Instant::now() + Duration::from_secs(120)
+    let expiration_time = Duration::from_secs(120);
+    let passed_time = Instant::now() - self.created_at;
+    let is_expired = passed_time > expiration_time;
+    if is_expired {
+      println!("Expiring {}", self);
+    }
+
+    is_expired
+  }
+}
+
+impl fmt::Display for MatchRequest {
+  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    write!(f, "id: {}, source:{}", self.id, self.source)
   }
 }
 
@@ -60,16 +74,17 @@ fn main() {
     let socket1 = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 8080);
     let socket2: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 2), 8080);
 
-    let match_requests: Vec<MatchRequest> = vec![
-      MatchRequest::build("name1".to_string(), socket1),
-      MatchRequest::build("name2".to_string(), socket1),
-      MatchRequest::build("name3".to_string(), socket2),
-      MatchRequest::build("name1".to_string(), socket2),
+    let request_sequence: Vec<(String, SocketAddrV4)> = vec![
+      ("name1".to_string(), socket1),
+      ("name2".to_string(), socket1),
+      ("name3".to_string(), socket2),
+      ("name1".to_string(), socket2),
     ];
 
-    for match_request in match_requests {
+    for request_datum in request_sequence {
+      let match_request = MatchRequest::build(request_datum.0, request_datum.1);
       tx2.send(Message::AddMatchRequest(match_request)).expect("tx2 send failed");
-      thread::sleep(Duration::from_millis(2000))
+      thread::sleep(Duration::from_secs(20))
     }
   });
   
@@ -77,7 +92,7 @@ fn main() {
   let tx3 = tx.clone();
   thread::spawn(move || {
     loop {
-      thread::sleep(Duration::from_secs(15));
+      thread::sleep(Duration::from_secs(10));
       tx3.send(Message::TriggerTimeouts).expect("tx3 send failed");
     }
   });
@@ -91,15 +106,12 @@ fn main() {
   for received in rx {
     match received {
       Message::AddMatchRequest(match_request) => {
-        println!("Add match request triggered, {:?}", match_request.id);
+        println!("Add match request triggered, {}", match_request);
         match_requests.insert(match_request.id.clone(), match_request);
       },
       Message::TriggerTimeouts => {
-        println!("timeout check triggered");
-        match_requests.retain(|_, v| !v.expired())
+        match_requests.retain(|_, v| !v.expired());
       },
     }
   }
-
-
 }
