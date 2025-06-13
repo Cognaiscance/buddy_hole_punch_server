@@ -1,22 +1,22 @@
-use std::net::{Ipv4Addr, IpAddr, SocketAddrV4, UdpSocket, SocketAddr};
-use std::sync::mpsc::{self, Sender};
+use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket, SocketAddr};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 use std::collections::HashMap;
 use std::fmt;
 
 enum Message {
-    AddMatchRequest(MatchRequest),
+    AddPairRequest(PairRequest),
     TriggerTimeouts,
 }
-#[derive(Clone)]
-struct MatchRequest {
+
+struct PairRequest {
   id: String,
   created_at: Instant,
   source: SocketAddrV4,
 }
 
-impl MatchRequest {
+impl PairRequest {
   fn build(id: String, source:SocketAddrV4 ) -> Self {
     Self {
       id: id,
@@ -26,7 +26,7 @@ impl MatchRequest {
   }
 
   fn expired(&self) -> bool {
-    let expiration_time = Duration::from_secs(120);
+    let expiration_time = Duration::from_secs(10);
     let passed_time = Instant::now() - self.created_at;
     let is_expired = passed_time > expiration_time;
     if is_expired {
@@ -37,15 +37,27 @@ impl MatchRequest {
   }
 }
 
-impl fmt::Display for MatchRequest {
+impl fmt::Display for PairRequest {
   fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
     write!(f, "id: {}, source:{}", self.id, self.source)
   }
 }
 
-struct MatchRequestPair {
-  mr1: MatchRequest,
-  mr2: MatchRequest,
+struct Pair {
+  a: PairRequest,
+  b: PairRequest,
+}
+
+impl Pair {
+  fn send_responses(&self) -> bool {
+    let socket = UdpSocket::bind("0.0.0.0:6115").expect("failed to connect on port 6114");
+    let message_b = format!("id: {}, source: {}", self.a.id, self.a.source.to_string());
+    let message_a = format!("id: {}, source: {}", self.b.id, self.b.source.to_string());
+
+    socket.send_to(message_a.as_bytes(), self.a.source).unwrap();
+    socket.send_to(message_b.as_bytes(), self.b.source).unwrap();
+    true
+  }
 }
 
 
@@ -61,8 +73,8 @@ fn main() {
       let (amt, src) = socket.recv_from(&mut buf).unwrap();
       if let SocketAddr::V4(v4_socket) = src {
         if let Ok(id) = String::from_utf8(buf[..amt].to_vec()) {
-          let match_request = MatchRequest::build(id, v4_socket);
-          tx1.send(Message::AddMatchRequest(match_request)).expect("tx2 send failed");
+          let pair_request = PairRequest::build(id, v4_socket);
+          tx1.send(Message::AddPairRequest(pair_request)).expect("tx2 send failed");
         }
       }
     }
@@ -82,9 +94,9 @@ fn main() {
     ];
 
     for request_datum in request_sequence {
-      let match_request = MatchRequest::build(request_datum.0, request_datum.1);
-      tx2.send(Message::AddMatchRequest(match_request)).expect("tx2 send failed");
-      thread::sleep(Duration::from_secs(20))
+      let pair_request = PairRequest::build(request_datum.0, request_datum.1);
+      tx2.send(Message::AddPairRequest(pair_request)).expect("tx2 send failed");
+      thread::sleep(Duration::from_secs(1))
     }
   });
   
@@ -92,7 +104,7 @@ fn main() {
   let tx3 = tx.clone();
   thread::spawn(move || {
     loop {
-      thread::sleep(Duration::from_secs(10));
+      thread::sleep(Duration::from_secs(1));
       tx3.send(Message::TriggerTimeouts).expect("tx3 send failed");
     }
   });
@@ -101,21 +113,32 @@ fn main() {
   // *****************************************
   // Main loop to handle the thread actions
   
-  let mut match_requests: HashMap<String, MatchRequest> = HashMap::new();
+  let mut pair_requests: HashMap<String, PairRequest> = HashMap::new();
 
   for received in rx {
     match received {
-      Message::AddMatchRequest(match_request) => {
-        if !match_requests.contains_key(&match_request.id) {
-          println!("Adding new MatchRequest: {}", match_request);
-          match_requests.insert(match_request.id.clone(), match_request);
+      Message::AddPairRequest(incoming) => {
+        let search = pair_requests.get(&incoming.id);
+        match search {
+          None => {
+            println!("Adding new PairRequest: {}", incoming);
+            pair_requests.insert(incoming.id.clone(), incoming);
+          },
+          Some(found) => {
+            if found.source == incoming.source {
+              println!("Updating PairRequest: {}", incoming);
+              pair_requests.insert(incoming.id.clone(), incoming);
+            } else {
+              println!("Requests paired: {}, {}", incoming, found);
+              let removed = pair_requests.remove(&incoming.id).unwrap();
+              let pair = Pair {a: incoming, b: removed};
+              pair.send_responses();
+            }
+          },
         }
-
-        
-        // if the id and socket address match, or if it is a new key then do insert.
       },
       Message::TriggerTimeouts => {
-        match_requests.retain(|_, v| !v.expired());
+        pair_requests.retain(|_, v| !v.expired());
       },
     }
   }
