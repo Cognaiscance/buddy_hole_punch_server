@@ -51,8 +51,11 @@ struct Pair {
 impl Pair {
   fn send_responses(&self) -> bool {
     let socket = UdpSocket::bind("0.0.0.0:6115").expect("failed to connect on port 6114");
-    let message_b = format!("id: {}, source: {}", self.a.id, self.a.source.to_string());
     let message_a = format!("id: {}, source: {}", self.b.id, self.b.source.to_string());
+    let message_b = format!("id: {}, source: {}", self.a.id, self.a.source.to_string());
+
+    println!("Response to {}: {}", self.a.source, message_a);
+    println!("Response to {}: {}", self.b.source, message_b);
 
     socket.send_to(message_a.as_bytes(), self.a.source).unwrap();
     socket.send_to(message_b.as_bytes(), self.b.source).unwrap();
